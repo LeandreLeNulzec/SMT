@@ -61,7 +61,7 @@ public class ChiffresTransitionSystem extends TransitionSystem {
         this.minBvRange  = new BigInteger("2").pow(bvBits-1).negate();
 
         // TODO: to complete!
-        this.maxNofSteps = 0;
+        this.maxNofSteps = 2*nums.length - 1;
 
         this.noOverflows = noOverflows;
     }
@@ -76,16 +76,21 @@ public class ChiffresTransitionSystem extends TransitionSystem {
 
     @Override
     public BoolExpr initialStateFormula() {
-        // TODO: to complete!
-
-        return null;
+        return context.mkEq(cache.idxStateVar(0), context.mkInt(0));
     }
 
     @Override
     public BoolExpr finalStateFormula(int step) {
-        // TODO: to complete!
+        IntExpr idx = cache.idxStateVar(step);
+        BoolExpr hasOneElement = context.mkEq(idx, context.mkInt(1));
 
-        return null;
+        
+        ArrayExpr<IntSort, BitVecSort> stack = cache.stackStateVar(step);
+        BitVecExpr top = (BitVecExpr) context.mkSelect(stack, context.mkInt(0));
+        BitVecNum expected = toBvNum(target);
+        BoolExpr topIsExpected = context.mkEq(top, expected);
+
+        return context.mkAnd(hasOneElement,topIsExpected);
     }
 
     /**
@@ -93,9 +98,21 @@ public class ChiffresTransitionSystem extends TransitionSystem {
      * step + 1 are linked by a "push(num)" action.
      */
     private BoolExpr pushNumFormula(int step, int num) {
-        // TODO: to complete!
+        ArrayExpr<IntSort, BitVecSort> stack_s = cache.stackStateVar(step);
+        ArrayExpr<IntSort, BitVecSort> stack_splus1 = cache.stackStateVar(step+1);
+        ArrayExpr<IntSort, BitVecSort> expected_stack = context.mkStore(stack_s, cache.idxStateVar(step), (BitVecExpr) this.toBvNum(num));
+        BoolExpr expectedEqualsGotten = context.mkEq(stack_splus1, expected_stack);
+        
+        BoolExpr[] notAlreadyUsed = new BoolExpr[maxNofSteps];
+        for (int i = 0; i < maxNofSteps; i++) {
+            BoolExpr inBounds = context.mkLt(context.mkInt(i), cache.idxStateVar(step));
+            BitVecExpr valAtI = (BitVecExpr) context.mkSelect(stack_s, context.mkInt(i));
+            BoolExpr notEqual = context.mkNot(context.mkEq(valAtI, (BitVecExpr) this.toBvNum(num)));
+            notAlreadyUsed[i] = context.mkImplies(inBounds, notEqual);
+        }
+        BoolExpr uniquenessConstraint = context.mkAnd(notAlreadyUsed);
 
-        return null;
+        return context.mkAnd(expectedEqualsGotten, uniquenessConstraint);
     }
 
 
@@ -127,9 +144,47 @@ public class ChiffresTransitionSystem extends TransitionSystem {
 
 
     private BoolExpr actionFormula(int step, ActionVar actVar, ActionPrecondition precond, ActionResult opRes) {
-        // TODO: to complete!
+        IntExpr indice = cache.idxStateVar(step);
+        IntExpr nextIndice = cache.idxStateVar(step+1);
 
-        return null;
+
+        IntExpr i1 = (IntExpr) context.mkSub(indice, context.mkInt(1));
+        IntExpr i2 = (IntExpr) context.mkSub(indice, context.mkInt(2));
+        
+        ArrayExpr<IntSort, BitVecSort> stack = cache.stackStateVar(step);
+        ArrayExpr<IntSort, BitVecSort> nextStack = cache.stackStateVar(step+1);
+        
+        BitVecExpr e1 = (BitVecExpr) context.mkSelect(stack, i1);
+        BitVecExpr e2 = (BitVecExpr) context.mkSelect(stack, i2);
+
+        BoolExpr prec = precond.get(step,e1,e2);
+        BitVecExpr res = opRes.get(step,e1,e2);
+        
+        BoolExpr expectedIndice = context.mkEq(i1, nextIndice);
+        
+        BoolExpr[] copyBelow = new BoolExpr[maxNofSteps];
+        for (int i = 0; i < maxNofSteps; i++) {
+            BoolExpr cond = context.mkLt(context.mkInt(i), i2);
+            Expr valBefore = context.mkSelect(stack, context.mkInt(i));
+            Expr valAfter = context.mkSelect(nextStack, context.mkInt(i));
+            copyBelow[i] = context.mkImplies(cond, context.mkEq(valAfter, valBefore));
+        }
+
+        BoolExpr updateRes = context.mkEq(
+            context.mkSelect(nextStack, i2),
+            res
+        );
+
+        BoolExpr effect = context.mkAnd(
+            expectedIndice,
+            context.mkAnd(copyBelow),
+            updateRes
+        );
+    
+        return context.mkImplies(
+            context.mkAnd(actVar.get(step), prec),
+            effect
+        );
     }
 
     /**
@@ -137,9 +192,10 @@ public class ChiffresTransitionSystem extends TransitionSystem {
      * step + 1 are linked by a "add" action.
      */
     private BoolExpr addFormula(int step) {
-        // TODO: to complete!
-
-        return null;
+        ActionResult result = (s, e1, e2) -> context.mkBVAdd(e1, e2);
+        ActionVar actionVar = s -> cache.addVar(s);
+        ActionPrecondition precondition = (s, e1, e2) -> context.mkTrue();
+        return actionFormula(step, actionVar, precondition, result);        
     }
 
     /**
@@ -147,9 +203,10 @@ public class ChiffresTransitionSystem extends TransitionSystem {
      * step + 1 are linked by a "sub" action.
      */
     private BoolExpr subFormula(int step) {
-        // TODO: to complete!
-
-        return null;
+        ActionResult result = (s, e1, e2) -> context.mkBVSub(e1, e2);
+        ActionVar actionVar = s -> cache.subVar(s);
+        ActionPrecondition precondition = (s, e1, e2) -> context.mkTrue();
+        return actionFormula(step, actionVar, precondition, result);
     }
 
     /**
@@ -157,9 +214,10 @@ public class ChiffresTransitionSystem extends TransitionSystem {
      * step + 1 are linked by a "mul" action.
      */
     private BoolExpr mulFormula(int step) {
-        // TODO: to complete!
-
-        return null;
+        ActionResult result = (s, e1, e2) -> context.mkBVMul(e1, e2);
+        ActionVar actionVar = s -> cache.mulVar(s);
+        ActionPrecondition precondition = (s, e1, e2) -> context.mkTrue();
+        return actionFormula(step, actionVar, precondition, result);
     }
 
     /**
@@ -167,16 +225,15 @@ public class ChiffresTransitionSystem extends TransitionSystem {
      * step + 1 are linked by a "div" action.
      */
     private BoolExpr divFormula(int step) {
-        // TODO: to complete!
-
-        return null;
+        ActionResult result = (s, e1, e2) -> context.mkBVSDiv(e1, e2);
+        ActionVar actionVar = s -> cache.divVar(s);
+        ActionPrecondition precondition = (s, e1, e2) -> context.mkNot(context.mkEq(e2,toBvNum(0)));
+        return actionFormula(step, actionVar, precondition, result);
     }
 
     @Override
     public BoolExpr transitionFormula(int step) {
-        // TODO: to complete!
-
-        return null;
+        return Z3Utils.atMostOne(divFormula(step),subFormula(step),addFormula(step),mulFormula(step));
     }
 
     @Override
