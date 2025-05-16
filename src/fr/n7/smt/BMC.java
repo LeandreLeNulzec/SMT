@@ -91,6 +91,7 @@ public class BMC {
         //   - if SAT, return SATISFIABLE if not in simulation mode
         //   - print simple info (SAT/UNSAT/UNKWON at step XXX etc)
         while (step < this.maxNOfSteps && (System.currentTimeMillis() - start) < maxTimePassed) {
+            System.out.println("Step " + step + " !!!!!");
 
             if (!simulation && system.finalStateFormula(step) != null) {
                 solver.push();
@@ -105,12 +106,9 @@ public class BMC {
             case UNKNOWN :
                 return Status.UNKNOWN;
 
-            case UNSATISFIABLE:
-                break;
-
             case SATISFIABLE:
-                system.printModel(solver.getModel(), step);
                 if (!simulation) {
+                    system.printModel(solver.getModel(), step);
                     return Status.SATISFIABLE;
                 }else{
                     break;
@@ -129,7 +127,59 @@ public class BMC {
         // return UNSATISFIABLE or SATISFIABLE if in simulation mode
 
         return (simulation ? Status.SATISFIABLE : Status.UNSATISFIABLE);
-    }
+    } 
+    // private Status solveExact(int timeout) {
+    //     Solver solver = context.mkSolver();
+
+    //     solver.add(system.initialStateFormula());
+
+    //     if (timeout >= 0) {
+    //         Params p = context.mkParams();
+    //         p.add("timeout", timeout);
+    //         solver.setParameters(p);
+    //     }
+
+    //     for (int step = 0; step <= maxNOfSteps; step++) {
+    //         BoolExpr finalF = simulation
+    //             ? context.mkTrue()
+    //             : system.finalStateFormula(step);
+    //         if (finalF != null) {
+    //             solver.push();
+    //             solver.add(finalF);
+    //         }
+
+    //         Status st = solver.check();
+    //         System.out.println("Step " + step + ": " + st);
+
+    //         if (st == Status.UNKNOWN) {
+    //             return Status.UNKNOWN;
+    //         }
+    //         if (st == Status.SATISFIABLE) {
+    //             if (simulation) {
+    //                 system.printModel(solver.getModel(), step);
+    //             } else {
+    //                 system.printModel(solver.getModel(), step);
+    //                 return Status.SATISFIABLE;
+    //             }
+    //         }
+
+    //         if (finalF != null) {
+    //             solver.pop();
+    //         }
+    //         if (step == maxNOfSteps) {
+    //             break;
+    //         }
+    //         solver.add(system.transitionFormula(step));
+    //     }
+
+    //     if (simulation) {
+    //         System.out.println("Simulation complete, printing final state:");
+    //         system.printModel(solver.getModel(), maxNOfSteps);
+    //         return Status.SATISFIABLE;
+    //     } else {
+    //         return Status.UNSATISFIABLE;
+    //     }
+    // }
 
     /**
      * This method tries to approximatively solve the BMC problem using

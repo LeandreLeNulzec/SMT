@@ -1,0 +1,430 @@
+/*
+ * N7PD : Projet BMC
+ * 
+ * Groupe : CEBULA Baptiste, RINGOOT Axel
+ */
+
+package fr.n7.smt;
+
+import java.math.BigInteger;
+import java.util.Arrays;
+
+import com.microsoft.z3.*;
+
+/**
+ * Transition system for the "Countdown" game a.k.a. "des chiffres
+ * et des lettres" in French.
+ *
+ * @author Christophe Garion <christophe.garion@isae-supaero.fr>
+ * @author Rémi Delmas <remi.delmas@onera.fr>
+ *
+ */
+public class ChiffresTransitionSystem extends TransitionSystem {
+
+    private Context       context;
+    private ChiffresCache cache;
+    private int           bvBits;
+    private int[]         nums;
+    private int           target;
+    private int           maxNofSteps;
+    private boolean       noOverflows;
+    
+    private BigInteger    maxBvRange;
+    private BigInteger    minBvRange;
+
+    private BitVecNum toBvNum(int num) {
+        if (noOverflows) {
+            BigInteger bigNum = new BigInteger(String.valueOf(num));
+
+            if (bigNum.compareTo(minBvRange) >= 0 && bigNum.compareTo(maxBvRange) <= 0)
+                return context.mkBV(num, bvBits);
+            else
+                throw new Error("the numeral " + String.valueOf(num) +
+                                " exceed signed bitvectors of size " +
+                                String.valueOf(bvBits));
+        } else {
+            return context.mkBV(num, bvBits);
+        }
+    }
+
+    /**
+     * Creates a new Chiffres transition system
+     *
+     * @param nums an array with the starting integers
+     * @param target the target integer
+     * @param bvBits the number of bits in bitvectors
+     * @param noOverflows a boolean that is true if you do not want
+     *        overflows with bitvectors
+     */
+    public ChiffresTransitionSystem(int[] nums, int target, int bvBits, boolean noOverflows) {
+        this.context     = Z3Utils.getZ3Context();
+        this.cache       = new ChiffresCache(bvBits);
+        this.nums        = nums;
+        this.target      = target;
+        this.bvBits      = bvBits;
+        this.maxBvRange  = new BigInteger("2").pow(bvBits-1).subtract(new BigInteger("1"));
+        this.minBvRange  = new BigInteger("2").pow(bvBits-1).negate();
+
+        // QUESTION 1 : maxNofSteps = 2 * nums.length - 1 or 0 if nums empty
+        this.maxNofSteps = Math.max(0, 2 * nums.length - 1);
+
+        this.noOverflows = noOverflows;
+    }
+
+    /**
+     * Gets the maximum number of steps of the transition system.
+     *
+     */
+    public int getMaxNofSteps() {
+        return this.maxNofSteps;
+    }
+
+    @Override
+    public BoolExpr initialStateFormula() {
+        return context.mkEq(cache.idxStateVar(0), context.mkInt(0));
+    }
+
+
+    @Override
+    public BoolExpr finalStateFormula(int step) {
+
+        IntExpr idx = cache.idxStateVar(step);
+        ArrayExpr<IntSort, BitVecSort> stack = cache.stackStateVar(step);
+
+        BoolExpr correctIdx = context.mkEq(idx, context.mkInt(1));
+        BitVecExpr top = (BitVecExpr) context.mkSelect(stack, context.mkInt(0));
+        BoolExpr correctTop = context.mkEq(top, toBvNum(target));
+
+        return context.mkAnd(correctIdx, correctTop);
+    }
+    
+
+    /**
+     * A boolean formula that should be true iff states at step and
+     * step + 1 are linked by a "push(num)" action.
+     */
+    private BoolExpr pushNumFormula(int step, int num) {
+
+        BoolExpr action = cache.pushNumVar(step, num);
+
+        IntExpr idx = cache.idxStateVar(step);
+        IntExpr nextIdx = cache.idxStateVar(step + 1);
+
+        ArrayExpr<IntSort, BitVecSort> stack = cache.stackStateVar(step);
+        ArrayExpr<IntSort, BitVecSort> nextStack = cache.stackStateVar(step + 1);
+
+        BitVecExpr pushed = toBvNum(num);
+
+        ArrayExpr<IntSort, BitVecSort> updatedStack = context.mkStore(stack, idx, pushed);
+
+        BoolExpr idxUpdate = context.mkEq(nextIdx, context.mkAdd(idx, context.mkInt(1)));
+        BoolExpr stackUpdate = context.mkEq(nextStack, updatedStack);
+
+        BoolExpr[] usedEarlier = new BoolExpr[step];
+        for (int t = 0; t < step; t++) {
+            usedEarlier[t] = cache.pushNumVar(t, num);
+        }
+        BoolExpr notUsedBefore = context.mkNot(context.mkOr(usedEarlier));
+
+        BoolExpr transition = context.mkImplies(action, context.mkAnd(idxUpdate, stackUpdate,notUsedBefore));
+
+        return context.mkAnd(transition);
+    }
+
+
+    private interface ActionVar {
+        /**
+         * Returns the decision variable for the action at step.
+         *
+         */
+        BoolExpr get(int step);
+    }
+
+    private interface ActionResult {
+        /**
+         * Returns the expression of the action result at step using
+         * e1 and e2, the two top values of the stack.
+         *
+         */
+        BitVecExpr get(int step, BitVecExpr e1, BitVecExpr e2);
+    }
+
+    private interface ActionPrecondition {
+        /**
+         * Returns the expression of the action precondition at step
+         * using e1 and e2, the two top values of the stack.
+         *
+         */
+        BoolExpr get(int step, BitVecExpr e1, BitVecExpr e2);
+    }
+
+
+    private BoolExpr actionFormula(int step, ActionVar actVar, ActionPrecondition precond, ActionResult opRes) {
+
+        BoolExpr action = actVar.get(step);
+
+        IntExpr idx = cache.idxStateVar(step);
+        IntExpr nextIdx = cache.idxStateVar(step + 1);
+
+        ArrayExpr<IntSort, BitVecSort> stack = cache.stackStateVar(step);
+        ArrayExpr<IntSort, BitVecSort> nextStack = cache.stackStateVar(step + 1);
+        
+        BoolExpr atLeastTwo = context.mkGe(idx, context.mkInt(2));
+ 
+        BitVecExpr e1 = (BitVecExpr) context.mkSelect(stack, context.mkSub(idx, context.mkInt(1)));
+        BitVecExpr e2 = (BitVecExpr) context.mkSelect(stack, context.mkSub(idx, context.mkInt(2)));
+
+        BoolExpr precondition = precond.get(step, e1, e2);
+
+        BitVecExpr result = opRes.get(step, e1, e2);
+
+        ArrayExpr<IntSort, BitVecSort> updatedStack = context.mkStore(stack, context.mkSub(idx, context.mkInt(2)), result);
+
+        BoolExpr idxUpdate = context.mkEq(nextIdx, context.mkSub(idx, context.mkInt(1)));
+        BoolExpr stackUpdate = context.mkEq(nextStack, updatedStack);
+        
+        return context.mkImplies(action, context.mkAnd(atLeastTwo, precondition, idxUpdate, stackUpdate));
+    }
+
+
+    /**
+     * A boolean formula that should be true iff states at step and
+     * step + 1 are linked by a "add" action.
+     */
+    private BoolExpr addFormula(int step) {
+        return actionFormula(
+            step,
+            cache::addVar,
+            (s, e1, e2) -> {
+                if (!noOverflows) return context.mkTrue();
+                BoolExpr noOvf = context.mkBVAddNoOverflow(e1, e2, true);
+                BoolExpr noUdf = context.mkBVAddNoUnderflow(e1, e2);
+                return context.mkAnd(noOvf, noUdf);
+            },
+            (s, e1, e2) -> context.mkBVAdd(e1, e2)
+        );
+    }
+
+    /**
+     * A boolean formula that should be true iff states at step and
+     * step + 1 are linked by a "sub" action.
+     */
+    private BoolExpr subFormula(int step) {
+        return actionFormula(
+            step,
+            cache::subVar,
+            (s, e1, e2) -> {
+                if (!noOverflows) return context.mkTrue();
+                BoolExpr noOvf = context.mkBVSubNoOverflow(e1, e2);
+                BoolExpr noUdf = context.mkBVSubNoUnderflow(e1, e2, true);
+                return context.mkAnd(noOvf, noUdf);
+            },
+            (s, e1, e2) -> context.mkBVSub(e1, e2)
+        );
+    }
+
+
+    /**
+     * A boolean formula that should be true iff states at step and
+     * step + 1 are linked by a "mul" action.
+     */
+    private BoolExpr mulFormula(int step) {
+        return actionFormula(
+            step,
+            cache::mulVar,
+            (s, e1, e2) -> {
+                if (!noOverflows) return context.mkTrue();
+                // Convert to int and back to detect overflow
+                IntExpr i1 = context.mkBV2Int(e1, true);
+                IntExpr i2 = context.mkBV2Int(e2, true);
+
+                IntExpr product = (IntExpr) context.mkMul(i1, i2);
+
+                    
+                BoolExpr lowerBound = context.mkGe(product, context.mkInt(minBvRange.intValue()));
+                BoolExpr upperBound = context.mkLe(product, context.mkInt(maxBvRange.intValue()));
+
+                return context.mkAnd(lowerBound, upperBound);
+            },
+            (s, e1, e2) -> context.mkBVMul(e1, e2)
+        );
+    }
+
+    /**
+     * A boolean formula that should be true iff states at step and
+     * step + 1 are linked by a "div" action.
+     */
+    private BoolExpr divFormula(int step) {
+        return actionFormula(
+            step,
+            cache::divVar,
+            (s, e1, e2) -> context.mkNot(context.mkEq(e2, context.mkBV(0, bvBits))),
+            (s, e1, e2) -> context.mkBVSDiv(e1, e2)
+        );
+    }
+
+
+   @Override
+    public BoolExpr transitionFormula(int step) {
+        BoolExpr[] actionFormulas = new BoolExpr[nums.length + 4];
+        BoolExpr[] actionVars = new BoolExpr[nums.length + 4];
+
+        int i = 0;
+
+        for (int num : nums) {
+            actionFormulas[i] = pushNumFormula(step, num);
+            actionVars[i] = cache.pushNumVar(step, num);
+            i++;
+        }
+
+        actionFormulas[i] = addFormula(step);
+        actionVars[i++] = cache.addVar(step);
+
+        actionFormulas[i] = subFormula(step);
+        actionVars[i++] = cache.subVar(step);
+
+        actionFormulas[i] = mulFormula(step);
+        actionVars[i++] = cache.mulVar(step);
+
+        actionFormulas[i] = divFormula(step);
+        actionVars[i++] = cache.divVar(step);
+
+        BoolExpr exclusive = Z3Utils.exactlyOne(actionVars);
+
+        return context.mkAnd(exclusive, context.mkAnd(actionFormulas));
+    }
+
+
+    /**
+     * Renvoie un BitVecExpr représentant la valeur absolue de
+     * la différence entre le sommet de pile et la cible.
+     */
+    public BitVecExpr finalStateApproxCriterion(int step) {
+        IntExpr idx = cache.idxStateVar(step);
+        ArrayExpr<IntSort, BitVecSort> stack = cache.stackStateVar(step);
+        BitVecExpr targetBv = toBvNum(target);
+        BitVecExpr penaltyValue = context.mkBV(maxBvRange.intValue(), bvBits);
+
+        BoolExpr isEmpty = context.mkEq(idx, context.mkInt(0));
+        BitVecExpr top = (BitVecExpr) context.mkSelect(stack, context.mkSub(idx, context.mkInt(1)));
+        BitVecExpr diff = context.mkBVSub(top, targetBv);
+        BoolExpr isNegative = context.mkBVSLT(diff, context.mkBV(0, bvBits));
+        BitVecExpr absDiff = (BitVecExpr) context.mkITE(isNegative, context.mkBVNeg(diff), diff);
+
+        return (BitVecExpr) context.mkITE(isEmpty, penaltyValue, absDiff);
+    }
+
+
+
+    @Override
+    public void printParams() {
+        System.out.println("\nChiffres transition system parameters:");
+        System.out.println("- nums       : " + Arrays.toString(nums));
+        System.out.println("- target     : " + String.valueOf(target));
+        System.out.println("- bvBits     : " + String.valueOf(bvBits));
+        System.out.println("- noOverflows: " + String.valueOf(noOverflows));
+    }
+
+    /**
+     * Prints the stack at step.
+     */
+    private void printStackAtStep(Model m, int step) {
+        int idxState = ((IntNum) m.eval(cache.idxStateVar(step), true)).getInt();
+
+        for (int idx = 0; idx <= maxNofSteps; idx++) {
+            BitVecExpr resbv =
+                (BitVecExpr) context.mkSelect(cache.stackStateVar(step),
+                                              context.mkInt(idx));
+            IntExpr resi = context.mkBV2Int(resbv, true);
+
+            if (idx == 0) {
+                System.out.print("|");
+            }
+
+            if (idx < idxState) {
+                System.out.print("|\033[7m");
+            } else {
+                System.out.print("|");
+            }
+
+            System.out.printf("%4d", ((IntNum) m.eval(resi, true)).getInt());
+
+            if (idx < idxState) {
+                System.out.print("\033[m");
+            }
+        }
+    }
+
+    @Override
+    public void printModel(Model m, int steps) {
+        System.out.printf("  init %3s ~> ", " ");
+        printStackAtStep(m, 0);
+        System.out.println();
+
+        for (int step = 0; step < steps; step++) {
+            for (int num : nums) {
+                if (m.eval(cache.pushNumVar(step, num), true).isTrue()) {
+                    System.out.printf("  push %3d ~> ", num);
+                }
+            }
+
+            if (m.eval(cache.mulVar(step), true).isTrue()) {
+                System.out.printf("  mul %4s ~> ", " ");
+            }
+
+            if (m.eval(cache.divVar(step), true).isTrue()) {
+                System.out.printf("  div %4s ~> ", " ");
+            }
+
+            if (m.eval(cache.addVar(step), true).isTrue()) {
+                System.out.printf("  add %4s ~> ", " ");
+            }
+
+            if (m.eval(cache.subVar(step), true).isTrue()) {
+                System.out.printf("  sub %4s ~> ", " ");
+            }
+
+            printStackAtStep(m, step + 1);
+
+            System.out.println();
+        }
+    }
+}
+
+//QUESTION 9.b : méthode solveApprox :
+/*
+ * private Status solveApprox(int timeout) {
+        Optimize opt = context.mkOptimize();
+
+        if (timeout >= 0) {
+            Params p = context.mkParams();
+            p.add("timeout", timeout);
+            opt.setParameters(p);
+        }
+
+        opt.Add(system.initialStateFormula());
+
+        for (int step = 0; step < maxNOfSteps; step++) {
+            opt.Add(system.transitionFormula(step));
+        }
+
+        BitVecExpr errorBv = ((ChiffresTransitionSystem) system).finalStateApproxCriterion(maxNOfSteps);
+        IntExpr errorInt = context.mkBV2Int(errorBv, true);
+        
+        opt.MkMinimize(errorInt);
+
+        Status status = opt.Check();
+
+        if (status == Status.SATISFIABLE) {
+            System.out.println("Approximate solution found:");
+            system.printModel(opt.getModel(), maxNOfSteps);
+            return Status.SATISFIABLE;
+        } else if (status == Status.UNKNOWN) {
+            System.out.println("Approximate solution status UNKNOWN");
+            return Status.UNKNOWN;
+        }
+
+        System.out.println("UNSATISFIABLE after all steps");
+        return Status.UNSATISFIABLE;
+    }
+ */
