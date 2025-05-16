@@ -144,9 +144,38 @@ public class BMC {
      * @param timeout the timeout to use. If negative, no timeout is used
      */
     private Status solveApprox(int timeout) {
-        // TODO: to complete!
+        Optimize opt = context.mkOptimize();
 
-        return Status.SATISFIABLE;
+        if (timeout >= 0) {
+            Params p = context.mkParams();
+            p.add("timeout", timeout);
+            opt.setParameters(p);
+        }
+
+        opt.Add(system.initialStateFormula());
+
+        for (int step = 0; step < maxNOfSteps; step++) {
+            opt.Add(system.transitionFormula(step));
+        }
+
+        BitVecExpr errorBv = ((ChiffresTransitionSystem) system).finalStateApproxCriterion(maxNOfSteps);
+        IntExpr errorInt = context.mkBV2Int(errorBv, true);
+        
+        opt.MkMinimize(errorInt);
+
+        Status status = opt.Check();
+
+        if (status == Status.SATISFIABLE) {
+            System.out.println("Approximate solution found:");
+            system.printModel(opt.getModel(), maxNOfSteps);
+            return Status.SATISFIABLE;
+        } else if (status == Status.UNKNOWN) {
+            System.out.println("Approximate solution status UNKNOWN");
+            return Status.UNKNOWN;
+        }
+
+        System.out.println("UNSATISFIABLE after all steps");
+        return Status.UNSATISFIABLE;
     }
 
     /**
